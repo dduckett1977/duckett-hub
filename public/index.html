@@ -287,6 +287,16 @@ button.alink{background:none;border:0;font:inherit;font-weight:700;color:inherit
   </div>
 </dialog>
 
+<dialog id="pvImp" class="pvdlg">
+  <div class="pvform">
+    <h3>Import permits</h3>
+    <p class="pvhint">Paste the import code Claude gives you. Items with the same permit number update instead of duplicating.</p>
+    <textarea id="pvImpText" rows="8" aria-label="Import code" placeholder="Paste the code here"></textarea>
+    <div class="pverr" id="pvImpErr"></div>
+    <div class="pvdfoot"><button class="pghost" id="pvImpCancel">Cancel</button><button class="pbtn" id="pvImpGo">Import</button></div>
+  </div>
+</dialog>
+
 <dialog id="pvPass" class="pvdlg">
   <div class="pvform">
     <h3 id="pvPassTitle">Unlock to edit</h3>
@@ -518,7 +528,7 @@ button.alink{background:none;border:0;font:inherit;font-weight:700;color:inherit
   function renderAuth(){
     var h = "";
     if (editable()){
-      h = '<button class="pghost psmall" data-pv="changepass">Change passphrase</button><button class="pghost psmall" data-pv="lock">Lock</button>';
+      h = '<button class="pghost psmall" data-pv="import">Import</button><button class="pghost psmall" data-pv="changepass">Change passphrase</button><button class="pghost psmall" data-pv="lock">Lock</button>';
     } else if (PH.reachable === false){
       h = '<span class="pvsync">Editing needs a connection.</span>';
     } else {
@@ -692,6 +702,40 @@ button.alink{background:none;border:0;font:inherit;font-weight:700;color:inherit
     }).catch(function(){ $("pvDlgErr").textContent = "Could not reach the server. Try again."; });
   };
 
+  // ---------- import (paste a code Claude prepares from a permit PDF) ----------
+  function slug(s){ return String(s || "").replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60); }
+  function openImport(){
+    if (!editable()){ needUnlock(openImport); return; }
+    $("pvImpText").value = ""; $("pvImpErr").textContent = ""; $("pvImp").showModal(); $("pvImpText").focus();
+  }
+  $("pvImpCancel").onclick = function(){ $("pvImp").close(); };
+  $("pvImpGo").onclick = function(){
+    var err = $("pvImpErr"); err.textContent = "";
+    var raw = $("pvImpText").value.trim(), data;
+    try { data = JSON.parse(raw); } catch(e){ err.textContent = "That code did not paste in full. Copy the whole box from Claude and try again."; return; }
+    if (data && !Array.isArray(data) && Array.isArray(data.items)) data = data.items;
+    if (!Array.isArray(data) || !data.length){ err.textContent = "No items found in that code."; return; }
+    var list = data.map(function(it){
+      var o = {}; fields.forEach(function(f){ o[f] = it && it[f] != null ? String(it[f]) : ""; });
+      o.id = (it && it.id && slug(it.id)) || (slug(o.number) ? "imp-" + slug(o.number) : "imp-" + slug(o.address + "-" + o.kind + "-" + o.expires));
+      return o;
+    });
+    $("pvImpGo").disabled = true;
+    var ok = 0, failed = 0, i = 0;
+    (function next(){
+      if (i >= list.length){
+        $("pvImpGo").disabled = false;
+        if (failed){ err.textContent = ok + " added. " + failed + " could not be added. Check the code and try again."; }
+        else { $("pvImp").close(); toast(ok === 1 ? "1 item imported" : ok + " items imported"); }
+        load(); return;
+      }
+      post({op:"upsert", item:list[i++]}).then(function(r){
+        if (r.status === 200) ok++; else if (r.status === 401){ pass = ""; lsDel(PK); failed++; i = list.length; } else failed++;
+        next();
+      }).catch(function(){ failed++; next(); });
+    })();
+  };
+
   // ---------- events ----------
   $("pvQ").addEventListener("input", render);
   document.addEventListener("click", function(e){
@@ -704,6 +748,7 @@ button.alink{background:none;border:0;font:inherit;font-weight:700;color:inherit
     if (act === "unlock") needUnlock();
     else if (act === "lock"){ pass = ""; lsDel(PK); render(); toast("Locked"); }
     else if (act === "changepass") openPass("change");
+    else if (act === "import") openImport();
     else if (act === "addto") openItem(null, b.dataset.addr);
     else if (act === "edit" && it) openItem(it);
     else if (act === "del" && it && confirm("Delete " + (it.kind || "this item") + " for " + (it.address || "this property") + "?")){
@@ -802,7 +847,7 @@ button.alink{background:none;border:0;font:inherit;font-weight:700;color:inherit
     } else {
       h = '<div class="alert ok"><h2>All clear</h2><p>No expiration dates are on file yet.</p>';
     }
-    h += '<p class="snap">'+esc(window.PH ? PH.label() : "")+'</p><button class="alink" data-go="permits">Open Permits and Licenses</button></div>';
+    h += '<p class="snap">'+esc(window.PH ? PH.label() : "")+'</p></div>';
     document.getElementById("hubalert").innerHTML = h;
   }
 
